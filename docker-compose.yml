@@ -1,0 +1,12 @@
+version: "3"
+services:
+  onlooker:
+    image: chrisjhart/onlooker:latest
+    container_name: onlooker
+    environment:
+      - FTP_IP="192.168.0.2.10"
+      - FTP_USER="example_username"
+      - FTP_PASS="example_password"
+      - DEBUG="0"
+    volumes:
+      - /example/local/filepath:/storage
