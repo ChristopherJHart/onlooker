@@ -2,7 +2,8 @@ FROM python:3
 
 WORKDIR /app
 
-RUN mkdir /storage/
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY onlooker.py /app/
 

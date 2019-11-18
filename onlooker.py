@@ -4,6 +4,7 @@ import logging
 import logging.config
 import time
 from ftplib import FTP
+from netmiko import ConnectHandler
 
 
 __author__ = "Christopher Hart"
@@ -33,12 +34,15 @@ FTP_IP = os.getenv("FTP_IP")
 FTP_USER = os.getenv("FTP_USER")
 FTP_PASS = os.getenv("FTP_PASS")
 FTP_POLL = os.getenv("FTP_POLL", "1")
+DEV_IP = os.getenv("DEV_IP")
+DEV_USER = os.getenv("DEV_USER")
+DEV_PASS = os.getenv("DEV_PASS")
+VRF_NAME = os.getenv("VRF_NAME", None)
 DEBUG = os.getenv("DEBUG", "False")
 
 def main():
     log.info("[INIT] Initializing program")
     log.info("[FTP] Logging into FTP server...")
-    log.debug("[FTP] Logging into %s with username %s and password %s", FTP_IP, FTP_USER, FTP_PASS)
     ftp_conn = FTP(host=FTP_IP, user=FTP_USER, passwd=FTP_PASS)
     log.info("[FTP] Login successful!")
     log.info("[FILES] Getting existing set of files on FTP server...")
@@ -47,18 +51,41 @@ def main():
     while True:
         for new_file in monitor_for_changes(ftp_conn, existing_fileset):
             log.info("[NEW] New file %s detected!", new_file)
-            copy_file(ftp_conn, new_file)
-            existing_fileset.add(new_file)
+            copy_file(new_file)
+        existing_fileset = get_fileset(ftp_conn)
         log.debug("[NEW] Sleeping for %s minutes", FTP_POLL)
         time.sleep(int(FTP_POLL) * 60)
 
-def copy_file(conn, new_file):
-    filepath = "/storage/{}".format(new_file[1::])
-    log.debug("[DNLD] Downloading new file to %s", filepath)
-    with open(filepath, "wb") as infile:
-        log.info("[DNLD] Downloading file...")
-        conn.retrbinary("RETR {}".format(new_file), infile.write, 1024)
-        log.info("[DNLD] Download complete!")
+def get_device_connection():
+    log.debug("[DEV] Connecting to device...")
+    device = {
+        "device_type": "autodetect",
+        "host": DEV_IP,
+        "username": DEV_USER,
+        "password": DEV_PASS.strip().replace("\\", ""),
+    }
+    dev_conn = ConnectHandler(**device)
+    log.debug("[DEV] Connection established!")
+    return dev_conn
+
+def copy_file(new_file):
+    dev_conn = get_device_connection()
+    modified_filename = new_file[2::] # Remove leading ./ from filename
+    output = ""
+    cmd_str = f"copy ftp://{FTP_USER}:{FTP_PASS}@{FTP_IP} bootflash: "
+    if VRF_NAME:
+        cmd_str += f"vrf {VRF_NAME}"
+    log.debug("[DEV] Executing command '%s'", cmd_str)
+    # Initial command
+    output += dev_conn.send_command(cmd_str, expect_string="Source filename")
+    # Verify source filename
+    output += dev_conn.send_command(modified_filename, expect_string="Destination filename")
+    # Verify destination filename
+    log.info("[DEV] Beginning to copy file '%s' to device...", modified_filename)
+    output += dev_conn.send_command(modified_filename, delay_factor=50, max_loops=1000, expect_string=r"#")
+    log.debug("[DEV] Output: %s", output)
+    if "[OK]" in output:
+        log.info("[DEV] File '%s' successfully copied to device!", modified_filename)
 
 def get_fileset(conn):
     return set(conn.nlst("./"))
@@ -68,13 +95,9 @@ def monitor_for_changes(conn, ex_files):
     log.debug("[NEW] Found %s files during this poll", len(current_files))
     new_files = current_files - ex_files
     if new_files:
-        log.debug("[NEW] Total of %s new files in this poll", len(current_files))
+        log.debug("[NEW] Total of %s new files in this poll", len(new_files))
         return new_files
     else:
-        if len(current_files) < len(ex_files):
-            log.debug("[NEW] Files were deleted on remote server - old number of files %s, new number %s", len(ex_files), len(current_files))
-            ex_files = current_files
-        log.debug("[NEW] No new files found this poll")
         return []
 
 def configure_logging(debug_enabled, logfile="{}.log".format(__name__)):
